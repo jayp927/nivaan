@@ -23,16 +23,18 @@ export default function Home() {
     try {
       const res = await fetch('/api/generate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
           prompt,
           style,
           aspectRatio
         })
       });
-      
+
       const data = await res.json();
-      
+
       if (!res.ok) {
         throw new Error(data.error || 'Failed to generate image');
       }
@@ -42,8 +44,9 @@ export default function Home() {
       } else {
         throw new Error('No image received from the server');
       }
-    } catch (err: any) {
-      setError(err.message || 'Failed to generate image. Please try again.');
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to generate image. Please try again.';
+      setError(errorMessage);
       console.error('Generation error:', err);
     } finally {
       setLoading(false);
@@ -140,6 +143,10 @@ export default function Home() {
                   src={imageUrl}
                   alt="Generated"
                   className="w-full rounded-lg shadow-lg"
+                  onError={(e) => {
+                    setError('Failed to load the generated image');
+                    setImageUrl('');
+                  }}
                 />
               </div>
             )}

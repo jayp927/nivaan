@@ -3,7 +3,8 @@ import axios from 'axios';
 
 export async function POST(request: Request) {
   try {
-    const { prompt, style, aspectRatio } = await request.json();
+    const body = await request.json();
+    const { prompt, style, aspectRatio } = body;
 
     if (!prompt) {
       return NextResponse.json(
@@ -12,83 +13,109 @@ export async function POST(request: Request) {
       );
     }
 
-    // First, make a request to get the CSRF token
-    const csrfResponse = await axios.get('https://www.desktophut.com/page/free-ai-image-generator', {
+    // Create form data
+    const formData = new URLSearchParams();
+    formData.append('prompt', prompt);
+    formData.append('style', style || 'Default');
+    formData.append('aspectRatio', aspectRatio || 'Default');
+    formData.append('width', '1024');
+    formData.append('height', '1024');
+    formData.append('enhancePrompt', 'true');
+    formData.append('privateImage', 'false');
+
+    // Make the request to generate the image
+    const response = await axios({
+      method: 'post',
+      url: 'https://www.desktophut.com/page/free-ai-image-generator',
+      data: formData,
       headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Origin': 'https://www.desktophut.com',
+        'Referer': 'https://www.desktophut.com/page/free-ai-image-generator',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-      }
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache'
+      },
+      maxRedirects: 5,
+      timeout: 60000
     });
 
-    // Extract CSRF token from the response
-    const csrfToken = csrfResponse.data.match(/csrf-token" content="([^"]+)"/)?.[1];
-
-    if (!csrfToken) {
-      console.error('Failed to get CSRF token');
+    // Check if response is HTML
+    if (typeof response.data !== 'string' || !response.data.includes('<!DOCTYPE')) {
+      console.error('Unexpected response format:', response.data);
       return NextResponse.json(
-        { error: 'Failed to initialize image generation' },
+        { error: 'Invalid response from image generator' },
         { status: 500 }
       );
     }
 
-    // Now make the actual generation request
-    const response = await axios.post(
-      'https://www.desktophut.com/api/generate',
-      {
-        prompt,
-        style: style || 'Default',
-        aspectRatio: aspectRatio || 'Default',
-        width: 1024,
-        height: 1024,
-        enhancePrompt: true,
-        privateImage: false
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'X-CSRF-Token': csrfToken,
-          'Origin': 'https://www.desktophut.com',
-          'Referer': 'https://www.desktophut.com/page/free-ai-image-generator',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        },
-        timeout: 30000 // 30 second timeout
+    // Extract the image URL from the HTML response
+    const htmlContent = response.data;
+    
+    // Try different patterns to find the image URL
+    const patterns = [
+      /<img[^>]+src="([^"]+)"[^>]+class="generated-image"/,
+      /<img[^>]+class="generated-image"[^>]+src="([^"]+)"/,
+      /<img[^>]+src="([^"]+)"[^>]+alt="Generated Image"/,
+      /<img[^>]+alt="Generated Image"[^>]+src="([^"]+)"/,
+      /<img[^>]+src="([^"]+)"[^>]+class="[^"]*generated[^"]*"/,
+      /<img[^>]+class="[^"]*generated[^"]*"[^>]+src="([^"]+)"/
+    ];
+
+    let imageUrl = null;
+    for (const pattern of patterns) {
+      const match = htmlContent.match(pattern);
+      if (match && match[1]) {
+        imageUrl = match[1];
+        break;
       }
-    );
-
-    if (!response.data || !response.data.imageUrl) {
-      console.error('No image URL in response:', response.data);
+    }
+    
+    if (!imageUrl) {
+      console.error('Could not find image URL in response. HTML content:', htmlContent.substring(0, 500));
       return NextResponse.json(
-        { error: 'Failed to generate image' },
+        { error: 'Failed to generate image - no image URL found in response' },
         { status: 500 }
       );
     }
+
+    const fullImageUrl = imageUrl.startsWith('http') 
+      ? imageUrl 
+      : `https://www.desktophut.com${imageUrl}`;
 
     return NextResponse.json({ 
-      image: response.data.imageUrl,
+      image: fullImageUrl,
       success: true 
     });
 
-  } catch (error: any) {
-    console.error('Generation error:', error.response?.data || error.message);
-    
-    // Handle specific error cases
-    if (error.code === 'ECONNABORTED') {
-      return NextResponse.json(
-        { error: 'Request timed out. Please try again.' },
-        { status: 504 }
-      );
+  } catch (error) {
+    console.error('Generation error:', error instanceof Error ? error.message : 'Unknown error');
+    if (axios.isAxiosError(error)) {
+      if (error.response?.status === 429) {
+        return NextResponse.json(
+          { error: 'Too many requests. Please try again later.' },
+          { status: 429 }
+        );
+      }
+      if (error.code === 'ECONNABORTED') {
+        return NextResponse.json(
+          { error: 'Request timed out. Please try again.' },
+          { status: 408 }
+        );
+      }
     }
-
-    if (error.response?.status === 429) {
-      return NextResponse.json(
-        { error: 'Too many requests. Please try again later.' },
-        { status: 429 }
-      );
-    }
-
     return NextResponse.json(
       { error: 'Image generation failed. Please try again.' },
       { status: 500 }
     );
   }
+}
+
+export async function GET() {
+  return NextResponse.json(
+    { error: 'Method not allowed' },
+    { status: 405 }
+  );
 } 
